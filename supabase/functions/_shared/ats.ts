@@ -29,12 +29,24 @@ export interface Keyword {
   weight: number
 }
 
+export interface BoardUrlOptions {
+  /**
+   * Greenhouse only: whether to pull full job descriptions.
+   *
+   * `content=true` is what makes a Greenhouse payload large — gitlab is 3.5 MB,
+   * stripe 4.6 MB. Token validation only needs to know the board resolves and
+   * parses, so it asks for the index instead and stays in the tens of KB.
+   */
+  content?: boolean
+}
+
 /** Public, unauthenticated board endpoint for a given provider + token. */
-export function boardUrl(ats: Ats, token: string): string {
+export function boardUrl(ats: Ats, token: string, opts: BoardUrlOptions = {}): string {
   const t = encodeURIComponent(token.trim())
+  const withContent = opts.content ?? true
   switch (ats) {
     case 'greenhouse':
-      return `https://boards-api.greenhouse.io/v1/boards/${t}/jobs?content=true`
+      return `https://boards-api.greenhouse.io/v1/boards/${t}/jobs${withContent ? '?content=true' : ''}`
     case 'lever':
       return `https://api.lever.co/v0/postings/${t}?mode=json`
     case 'ashby':
@@ -110,12 +122,34 @@ function toIso(value: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+export interface NormalizeOptions {
+  /**
+   * Truncate each description to this many characters as it is built.
+   *
+   * Bounds peak memory on boards that return megabytes: a large Greenhouse
+   * payload holds hundreds of descriptions, and `htmlToText` allocates several
+   * intermediates per description on the way through. Capping here rather than
+   * at insert time means the long tail is never retained at all.
+   */
+  descriptionLimit?: number
+}
+
+function cap(text: string, limit: number | undefined): string {
+  return limit !== undefined && text.length > limit ? text.slice(0, limit) : text
+}
+
 /**
  * Turn a raw board payload into normalised jobs.
  * Throws if the payload is not the shape this provider is supposed to return —
  * that is how a stale board token surfaces.
  */
-export function normalize(ats: Ats, payload: unknown): NormalizedJob[] {
+export function normalize(
+  ats: Ats,
+  payload: unknown,
+  opts: NormalizeOptions = {},
+): NormalizedJob[] {
+  const limit = opts.descriptionLimit
+
   switch (ats) {
     case 'greenhouse': {
       const jobs = (payload as { jobs?: unknown[] })?.jobs
@@ -123,7 +157,10 @@ export function normalize(ats: Ats, payload: unknown): NormalizedJob[] {
       return jobs.map((raw) => {
         const j = raw as Record<string, any>
         const location: string | null = j.location?.name ?? null
-        const content: string = typeof j.content === 'string' ? htmlToText(j.content) : ''
+        // `limit === 0` is the validation path: skip the flatten entirely rather
+        // than building the text and throwing it away.
+        const content: string =
+          limit === 0 || typeof j.content !== 'string' ? '' : cap(htmlToText(j.content), limit)
         const departments: any[] = Array.isArray(j.departments) ? j.departments : []
         return {
           externalId: String(j.id),
@@ -152,7 +189,7 @@ export function normalize(ats: Ats, payload: unknown): NormalizedJob[] {
           department: cats.department ?? cats.team ?? null,
           remote: workplace.toLowerCase() === 'remote' || REMOTE_RE.test(location ?? ''),
           url: String(j.hostedUrl ?? j.applyUrl ?? ''),
-          description: String(j.descriptionPlain ?? j.description ?? ''),
+          description: cap(String(j.descriptionPlain ?? j.description ?? ''), limit),
           postedAt: toIso(j.createdAt),
         }
       })
@@ -173,9 +210,16 @@ export function normalize(ats: Ats, payload: unknown): NormalizedJob[] {
             department: j.department ?? j.team ?? null,
             remote: j.isRemote === true || REMOTE_RE.test(location ?? ''),
             url: String(j.jobUrl ?? j.applyUrl ?? ''),
-            description: String(
-              j.descriptionPlain ?? (j.descriptionHtml ? htmlToText(j.descriptionHtml) : ''),
-            ),
+            description:
+              limit === 0
+                ? ''
+                : cap(
+                    String(
+                      j.descriptionPlain ??
+                        (j.descriptionHtml ? htmlToText(j.descriptionHtml) : ''),
+                    ),
+                    limit,
+                  ),
             postedAt: toIso(j.publishedAt),
           }
         })

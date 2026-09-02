@@ -11,8 +11,30 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.1'
 import { boardUrl, normalize, scoreJob, type Ats, type Keyword } from '../_shared/ats.ts'
 
-const CONCURRENCY = 5
+/**
+ * Two at a time, not five.
+ *
+ * A Greenhouse board with `content=true` is measured in megabytes (gitlab
+ * 3.5 MB, stripe 4.6 MB). Each in-flight board costs the raw JSON string, its
+ * parsed object graph, and the normalised output at once, so concurrency is a
+ * direct multiplier on peak memory — five boards is what produced
+ * WORKER_RESOURCE_LIMIT.
+ */
+const CONCURRENCY = 2
+
 const FETCH_TIMEOUT_MS = 20_000
+
+/**
+ * Cap on the description text kept per posting while scoring.
+ *
+ * `scoreJob` only reads the first 20k characters anyway, and the stored copy is
+ * trimmed to 8k. Truncating during normalisation keeps the long tail from ever
+ * being retained.
+ */
+const DESCRIPTION_LIMIT = 12_000
+
+/** Rows per upsert request. A single 500-row batch is a multi-MB body. */
+const UPSERT_CHUNK = 200
 
 interface CompanyRow {
   id: string
@@ -34,11 +56,11 @@ const cors = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-async function fetchBoard(ats: Ats, token: string): Promise<unknown> {
+async function fetchBoard(ats: Ats, token: string, content = true): Promise<unknown> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   try {
-    const res = await fetch(boardUrl(ats, token), {
+    const res = await fetch(boardUrl(ats, token, { content }), {
       signal: controller.signal,
       headers: { accept: 'application/json', 'user-agent': 'JobRadar/1.0' },
     })
@@ -105,8 +127,10 @@ Deno.serve(async (req: Request) => {
   if (mode === 'validate') {
     const checks = await pooled(rows, CONCURRENCY, async (company) => {
       try {
-        const payload = await fetchBoard(company.ats, company.board_token)
-        const jobs = normalize(company.ats, payload)
+        // `content: false` — validation only needs to know the board resolves
+        // and parses. Skipping descriptions turns a 4 MB fetch into a ~40 KB one.
+        const payload = await fetchBoard(company.ats, company.board_token, false)
+        const jobs = normalize(company.ats, payload, { descriptionLimit: 0 })
         return { id: company.id, company: company.name, ok: true, found: jobs.length }
       } catch (err) {
         return {
@@ -126,7 +150,9 @@ Deno.serve(async (req: Request) => {
   const results = await pooled<CompanyRow, PollResult>(rows, CONCURRENCY, async (company) => {
     try {
       const payload = await fetchBoard(company.ats, company.board_token)
-      const jobs = normalize(company.ats, payload).filter((j) => j.title && j.url)
+      const jobs = normalize(company.ats, payload, {
+        descriptionLimit: DESCRIPTION_LIMIT,
+      }).filter((j) => j.title && j.url)
 
       if (jobs.length) {
         const scored = jobs.map((job) => {
@@ -151,10 +177,18 @@ Deno.serve(async (req: Request) => {
         // onConflict on (company_id, external_id): re-seeing a posting refreshes
         // its score and last_seen_at but never resets first_seen_at, so the
         // "new since yesterday" feed stays honest.
-        const { error } = await supabase
-          .from('jobs')
-          .upsert(scored, { onConflict: 'company_id,external_id', ignoreDuplicates: false })
-        if (error) throw new Error(error.message)
+        //
+        // Chunked so a board with hundreds of openings does not build one
+        // multi-megabyte request body.
+        for (let i = 0; i < scored.length; i += UPSERT_CHUNK) {
+          const { error } = await supabase
+            .from('jobs')
+            .upsert(scored.slice(i, i + UPSERT_CHUNK), {
+              onConflict: 'company_id,external_id',
+              ignoreDuplicates: false,
+            })
+          if (error) throw new Error(error.message)
+        }
       }
 
       await supabase

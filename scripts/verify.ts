@@ -4,7 +4,7 @@
  * The fixtures mirror the real response shapes of the three public board APIs.
  * Run with:  npm run verify
  */
-import { htmlToText, normalize, scoreJob, type Keyword } from '../supabase/functions/_shared/ats.ts'
+import { boardUrl, htmlToText, normalize, scoreJob, type Keyword } from '../supabase/functions/_shared/ats.ts'
 import { buildCoverLetter, humanList, isUneditedDraft } from '../src/lib/coverLetter.ts'
 
 let failures = 0
@@ -168,6 +168,56 @@ console.log('\nhtmlToText')
 check('strips script tags', !htmlToText('<script>bad()</script><p>ok</p>').includes('bad'))
 check('numeric entities decode', htmlToText('&#8217;') === '’')
 check('block tags become newlines', htmlToText('<p>a</p><p>b</p>').includes('\n'))
+
+// ── memory guards ─────────────────────────────────────────────
+// These bound peak memory in the edge function. A 4.6 MB Greenhouse payload at
+// concurrency 5 is what produced WORKER_RESOURCE_LIMIT in production.
+console.log('\nboardUrl / descriptionLimit')
+
+check(
+  'greenhouse asks for content by default',
+  boardUrl('greenhouse', 'acme').includes('content=true'),
+)
+check(
+  'greenhouse omits content when not wanted',
+  !boardUrl('greenhouse', 'acme', { content: false }).includes('content'),
+  boardUrl('greenhouse', 'acme', { content: false }),
+)
+check(
+  'content flag does not disturb lever',
+  boardUrl('lever', 'acme', { content: false }) === boardUrl('lever', 'acme'),
+)
+check(
+  'content flag does not disturb ashby',
+  boardUrl('ashby', 'acme', { content: false }) === boardUrl('ashby', 'acme'),
+)
+
+const longHtml = `&lt;p&gt;${'Laravel and PostgreSQL. '.repeat(400)}&lt;/p&gt;`
+const capped = normalize('greenhouse', {
+  jobs: [{ id: 1, title: 'Engineer', absolute_url: 'https://x', content: longHtml }],
+}, { descriptionLimit: 500 })
+check('truncates long descriptions', capped[0].description.length === 500, `${capped[0].description.length}`)
+
+const uncapped = normalize('greenhouse', {
+  jobs: [{ id: 1, title: 'Engineer', absolute_url: 'https://x', content: longHtml }],
+})
+check('keeps full description when uncapped', uncapped[0].description.length > 5000)
+
+const validated = normalize('greenhouse', {
+  jobs: [{ id: 1, title: 'Engineer', absolute_url: 'https://x', content: longHtml }],
+}, { descriptionLimit: 0 })
+check('limit 0 drops descriptions entirely', validated[0].description === '')
+check('limit 0 still parses the posting', validated[0].title === 'Engineer' && validated.length === 1)
+
+const ashbyCapped = normalize('ashby', {
+  jobs: [{ id: 'a', title: 'Dev', jobUrl: 'https://x', descriptionHtml: '<p>hello</p>' }],
+}, { descriptionLimit: 0 })
+check('limit 0 applies to ashby too', ashbyCapped[0].description === '')
+
+const leverCapped = normalize('lever', [
+  { id: 'l', text: 'Dev', hostedUrl: 'https://x', descriptionPlain: 'x'.repeat(9000) },
+], { descriptionLimit: 100 })
+check('limit applies to lever', leverCapped[0].description.length === 100)
 
 // ── cover letter ──────────────────────────────────────────────
 console.log('\ncoverLetter')
