@@ -55,9 +55,20 @@ Weights live in the `keywords` table, not in code, so tuning the profile is a SQ
 
 Scores are computed **at poll time and stored on the row**. Editing `keywords` does not retroactively rescore anything — the next poll does.
 
+### The application flow
+
+`0004_application_flow.sql` added the preparation step between "found a posting" and "marked applied". The path is **profile → generated draft → your edit → open the real posting → mark applied → follow up**, and the actual submission is always a human opening the ATS page. Nothing auto-submits.
+
+- [src/lib/coverLetter.ts](src/lib/coverLetter.ts) is a pure, deterministic drafter — no LLM, no API key, no network call in the middle of the flow, which is what makes it fixture-testable in `verify.ts`. It reads the scorer's `matched_keywords`, since that array is already exactly the overlap between the posting and the profile.
+- Every clause is skipped when its profile field is empty, so a half-filled profile yields a shorter letter rather than one with `[placeholder]` holes. There are fixture checks pinning that.
+- `isUneditedDraft()` compares a draft against a freshly generated one. The dialog uses it both to avoid clobbering real edits on "Redraft" and to warn when you're about to send something untailored.
+- `ApplyDialog` is mounted **once** in `Dashboard`, not per card — the feed can hold 600 rows. Cards raise `onApply(job)`; the dialog re-reads its row from `feed.jobs` each render so it reflects the latest save rather than the snapshot from when it opened.
+- `saveApplication(job, patch)` in `useData.ts` writes any subset of the record. Columns absent from the payload are untouched by the `ON CONFLICT DO UPDATE`, so saving a cover letter doesn't require resending status/notes/variant. `applied_at` is stamped once on first reaching `applied` and never overwritten — it's the clock the response rate runs on.
+
 ### Database shape
 
-- `job_feed` is a read-only view joining `jobs` + `companies` + `applications`; every read in [src/hooks/useData.ts](src/hooks/useData.ts) goes through it, every write targets the underlying tables. It is set `security_invoker = on` so RLS actually applies.
+- `job_feed` is a read-only view joining `jobs` + `companies` + `applications`; every read in [src/hooks/useData.ts](src/hooks/useData.ts) goes through it, every write targets the underlying tables. It is set `security_invoker = on` so RLS actually applies. **If you add a column to `applications`, add it to this view too** — `notes` and `resume_variant` sat on the table unexposed from 0001 to 0004, which silently made the notes editor write-only.
+- `profile` is a single-row table keyed `id boolean primary key check (id)`, so a second row is a constraint violation rather than something the UI has to defend against.
 - `applications.job_id` is unique — one application per job — so status/notes writes are `upsert(..., { onConflict: 'job_id' })`.
 - RLS grants full access to any `authenticated` user. This is a single-user instance by design; there is no per-user ownership column anywhere.
 
@@ -71,4 +82,6 @@ Tailwind v4 through the `@tailwindcss/vite` plugin — there is no `tailwind.con
 
 ## Scope boundary
 
-The project automates *finding* postings only. Application submission is left to the user on purpose, and every endpoint touched is a public unauthenticated JSON API the company publishes deliberately. Don't add scraping, headless-browser automation, authenticated aggregator access (LinkedIn/Indeed), or auto-submission — the README explains why at length, and it is a product decision rather than a missing feature.
+The project automates *finding* postings and *preparing* applications. The submission itself is left to the user on purpose, and every endpoint touched is a public unauthenticated JSON API the company publishes deliberately. Don't add scraping, headless-browser automation, authenticated aggregator access (LinkedIn/Indeed), or auto-submission — the README explains why at length, and it is a product decision rather than a missing feature.
+
+The apply flow is drawn deliberately up to that line: it drafts, stores and tracks, and its final action opens the real posting in a new tab for you to submit. `ApplyDialog.submitAndMarkApplied` is the seam where an auto-submitter would go; it is a `window.open` on purpose.

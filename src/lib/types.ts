@@ -70,4 +70,31 @@ export interface FeedJob {
   application_id: string | null
   application_status: ApplicationStatus | null
   applied_at: string | null
+  notes: string | null
+  resume_variant: string | null
+  cover_letter: string | null
+  follow_up_at: string | null
 }
+
+export interface Profile {
+  id: boolean
+  full_name: string
+  headline: string
+  summary: string
+  location: string
+  portfolio_url: string | null
+  resume_variants: string[]
+}
+
+/** Fields the apply dialog writes back; everything is optional per save. */
+export interface ApplicationPatch {
+  status?: ApplicationStatus
+  notes?: string | null
+  resume_variant?: string | null
+  cover_letter?: string | null
+  follow_up_at?: string | null
+  applied_at?: string | null
+}
+
+/** Default chase-up window. Two weeks of silence is a non-answer. */
+export const FOLLOW_UP_DAYS = 10

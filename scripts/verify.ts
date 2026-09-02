@@ -5,6 +5,7 @@
  * Run with:  npm run verify
  */
 import { htmlToText, normalize, scoreJob, type Keyword } from '../supabase/functions/_shared/ats.ts'
+import { buildCoverLetter, humanList, isUneditedDraft } from '../src/lib/coverLetter.ts'
 
 let failures = 0
 
@@ -167,6 +168,66 @@ console.log('\nhtmlToText')
 check('strips script tags', !htmlToText('<script>bad()</script><p>ok</p>').includes('bad'))
 check('numeric entities decode', htmlToText('&#8217;') === '’')
 check('block tags become newlines', htmlToText('<p>a</p><p>b</p>').includes('\n'))
+
+// ── cover letter ──────────────────────────────────────────────
+console.log('\ncoverLetter')
+
+const sampleJob = {
+  title: 'Senior Backend Engineer',
+  companyName: 'Northwind',
+  matchedKeywords: ['laravel', 'php', 'postgresql'],
+  remote: true,
+  location: 'Remote',
+}
+const fullProfile = {
+  fullName: 'Jayvee Osapdin',
+  headline: 'Full-stack developer · Laravel, Vue',
+  summary: 'I have spent eight years building Laravel systems that stay boring under load.',
+  location: 'Manila',
+  portfolioUrl: 'https://example.com',
+}
+
+const letter = buildCoverLetter(sampleJob, fullProfile)
+check('addresses the company', letter.startsWith('Hi Northwind team,'))
+check('names the role', letter.includes('Senior Backend Engineer'))
+check('weaves in matched keywords', letter.includes('laravel, php and postgresql'))
+check('carries the profile summary', letter.includes('stay boring under load'))
+check('mentions location for a remote role', letter.includes('Manila'))
+check('signs off with name and headline', letter.includes('Jayvee Osapdin') && letter.includes('Vue'))
+
+// A blank profile is the state right after the migration runs. The draft should
+// degrade to something shorter, never emit "[your name]"-style placeholders.
+const blank = buildCoverLetter(sampleJob, {
+  fullName: '', headline: '', summary: '', location: '', portfolioUrl: null,
+})
+check('survives an empty profile', blank.includes('Senior Backend Engineer'))
+check('no placeholder leakage', !/\[|undefined|null/.test(blank), blank)
+check('omits the location sentence when unknown', !blank.includes('based in'))
+
+// Non-remote roles should not get the timezone paragraph.
+const onsite = buildCoverLetter({ ...sampleJob, remote: false }, fullProfile)
+check('skips remote sentence for on-site roles', !onsite.includes('set up for remote work'))
+
+const noKeywords = buildCoverLetter({ ...sampleJob, matchedKeywords: [] }, fullProfile)
+check('omits overlap paragraph with no keywords', !noKeywords.includes('lines up closely'))
+
+check('caps the keyword list at six', (() => {
+  const many = buildCoverLetter(
+    { ...sampleJob, matchedKeywords: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] },
+    fullProfile,
+  )
+  return many.includes('a, b, c, d, e and f') && !many.includes('and g')
+})())
+
+check('humanList joins two items without a comma', humanList(['a', 'b']) === 'a and b')
+check('humanList handles one item', humanList(['a']) === 'a')
+check('humanList handles none', humanList([]) === '')
+
+check('detects an unedited draft', isUneditedDraft(letter, sampleJob, fullProfile))
+check(
+  'detects an edited draft',
+  !isUneditedDraft(`${letter}\n\nPS: referred by Dana.`, sampleJob, fullProfile),
+)
 
 console.log(
   failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) failed.\n`,

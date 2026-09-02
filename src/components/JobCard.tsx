@@ -1,18 +1,8 @@
-import { useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
-import { ExternalLink, EyeOff, MapPin, RotateCcw, StickyNote } from 'lucide-react'
+import { ExternalLink, EyeOff, FileText, MapPin, RotateCcw, StickyNote } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ScoreDial } from '@/components/ScoreDial'
 import { STATUSES, type ApplicationStatus, type FeedJob } from '@/lib/types'
@@ -23,7 +13,7 @@ interface Props {
   onStatus: (job: FeedJob, status: ApplicationStatus) => void
   onUntrack: (job: FeedJob) => void
   onDismiss: (job: FeedJob, dismissed: boolean) => void
-  onNotes: (job: FeedJob, notes: string) => void
+  onApply: (job: FeedJob) => void
 }
 
 function age(iso: string | null): string | null {
@@ -35,12 +25,10 @@ function age(iso: string | null): string | null {
   }
 }
 
-export function JobCard({ job, onStatus, onUntrack, onDismiss, onNotes }: Props) {
-  const [notesOpen, setNotesOpen] = useState(false)
-  const [draft, setDraft] = useState('')
-
+export function JobCard({ job, onStatus, onUntrack, onDismiss, onApply }: Props) {
   const posted = age(job.posted_at)
   const isNew = Date.now() - new Date(job.first_seen_at).getTime() < 3 * 24 * 60 * 60 * 1000
+  const hasDraft = Boolean(job.cover_letter)
 
   return (
     <Card
@@ -64,6 +52,13 @@ export function JobCard({ job, onStatus, onUntrack, onDismiss, onNotes }: Props)
           {isNew && !job.application_status && (
             <Badge className="bg-primary/20 text-primary">new</Badge>
           )}
+          {hasDraft && (
+            <Badge variant="outline" className="gap-1 border-border/70 text-muted-foreground">
+              <FileText className="h-3 w-3" />
+              draft
+            </Badge>
+          )}
+          {job.notes && <StickyNote className="h-3.5 w-3.5 text-muted-foreground" />}
         </div>
 
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
@@ -99,13 +94,10 @@ export function JobCard({ job, onStatus, onUntrack, onDismiss, onNotes }: Props)
           <Button
             variant="ghost"
             size="icon-sm"
-            title="Notes"
-            onClick={() => {
-              setDraft('')
-              setNotesOpen(true)
-            }}
+            title={hasDraft ? 'Edit application' : 'Prepare application'}
+            onClick={() => onApply(job)}
           >
-            <StickyNote />
+            <FileText />
           </Button>
           <Button
             variant="ghost"
@@ -117,57 +109,32 @@ export function JobCard({ job, onStatus, onUntrack, onDismiss, onNotes }: Props)
           </Button>
         </div>
 
-        <Select
-          value={job.application_status ?? 'none'}
-          onValueChange={(value) => {
-            if (value === 'none') onUntrack(job)
-            else onStatus(job, value as ApplicationStatus)
-          }}
-        >
-          <SelectTrigger className="h-8 w-[132px] text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">Not tracked</SelectItem>
-            {STATUSES.map((s) => (
-              <SelectItem key={s.value} value={s.value}>
-                {s.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+        <div className="flex items-center gap-1.5">
+          <Button size="sm" variant="secondary" className="h-8" onClick={() => onApply(job)}>
+            {hasDraft ? 'Resume' : 'Prepare'}
+          </Button>
 
-      <Dialog open={notesOpen} onOpenChange={setNotesOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Notes</DialogTitle>
-            <DialogDescription>
-              {job.title} · {job.company_name}
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            autoFocus
-            rows={6}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Referral contact, salary band, what to emphasise in the cover letter…"
-          />
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setNotesOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                onNotes(job, draft)
-                setNotesOpen(false)
-              }}
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <Select
+            value={job.application_status ?? 'none'}
+            onValueChange={(value) => {
+              if (value === 'none') onUntrack(job)
+              else onStatus(job, value as ApplicationStatus)
+            }}
+          >
+            <SelectTrigger className="h-8 w-[132px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Not tracked</SelectItem>
+              {STATUSES.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
     </Card>
   )
 }

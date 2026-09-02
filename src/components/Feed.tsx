@@ -18,8 +18,8 @@ const SCORE_STEPS = [
   { value: '60', label: '60+ · strong match' },
 ]
 
-export function Feed({ feed }: { feed: FeedApi }) {
-  const { jobs, loading, setStatus, untrack, dismiss, setNotes } = feed
+export function Feed({ feed, onApply }: { feed: FeedApi; onApply: (job: FeedJob) => void }) {
+  const { jobs, loading, setStatus, untrack, dismiss } = feed
 
   const [query, setQuery] = useState('')
   const [market, setMarket] = useState<Market | 'all'>('all')
@@ -147,7 +147,7 @@ export function Feed({ feed }: { feed: FeedApi }) {
               onStatus={setStatus}
               onUntrack={untrack}
               onDismiss={dismiss}
-              onNotes={setNotes}
+              onApply={onApply}
             />
           ))}
         </div>

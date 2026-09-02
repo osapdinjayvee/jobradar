@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
 import { formatDistanceToNow } from 'date-fns'
-import { ArrowRight, ExternalLink, X } from 'lucide-react'
+import { AlarmClock, ArrowRight, ExternalLink, FileText, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { PIPELINE, type ApplicationStatus, type FeedJob } from '@/lib/types'
+import { cn } from '@/lib/utils'
 import type { useFeed } from '@/hooks/useData'
 
 type FeedApi = ReturnType<typeof useFeed>
@@ -19,10 +20,18 @@ const COLUMN_LABEL: Record<ApplicationStatus, string> = {
   withdrawn: 'Withdrawn',
 }
 
-export function Tracker({ feed }: { feed: FeedApi }) {
+/** A follow-up is due once its date has passed and the role is still open. */
+export function isFollowUpDue(job: FeedJob): boolean {
+  if (!job.follow_up_at) return false
+  if (job.application_status === 'rejected' || job.application_status === 'withdrawn') return false
+  return new Date(job.follow_up_at).getTime() <= Date.now()
+}
+
+export function Tracker({ feed, onApply }: { feed: FeedApi; onApply: (job: FeedJob) => void }) {
   const { jobs, setStatus, untrack } = feed
 
   const tracked = useMemo(() => jobs.filter((j) => j.application_status), [jobs])
+  const dueCount = useMemo(() => tracked.filter(isFollowUpDue).length, [tracked])
 
   const columns = useMemo(
     () =>
@@ -62,13 +71,17 @@ export function Tracker({ feed }: { feed: FeedApi }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Tracked" value={tracked.length} />
         <Stat label="Applied" value={appliedCount} />
         <Stat label="In conversation" value={respondedCount} />
         <Stat
           label="Response rate"
           value={`${responseRate}%`}
           hint={appliedCount ? undefined : 'no applications yet'}
+        />
+        <Stat
+          label="Follow-ups due"
+          value={dueCount}
+          hint={dueCount ? 'chase these today' : undefined}
         />
       </div>
 
@@ -96,6 +109,7 @@ export function Tracker({ feed }: { feed: FeedApi }) {
                     next={next}
                     onAdvance={setStatus}
                     onUntrack={untrack}
+                    onApply={onApply}
                   />
                 ))
               )}
@@ -141,14 +155,18 @@ function TrackerCard({
   next,
   onAdvance,
   onUntrack,
+  onApply,
 }: {
   job: FeedJob
   next: ApplicationStatus | undefined
   onAdvance: (job: FeedJob, status: ApplicationStatus) => void
   onUntrack: (job: FeedJob) => void
+  onApply: (job: FeedJob) => void
 }) {
+  const due = isFollowUpDue(job)
+
   return (
-    <Card className="group space-y-2 p-3">
+    <Card className={cn('group space-y-2 p-3', due && 'border-amber-500/50')}>
       <div className="flex items-start justify-between gap-2">
         <a
           href={job.url}
@@ -171,6 +189,13 @@ function TrackerCard({
 
       <p className="text-xs text-muted-foreground">{job.company_name}</p>
 
+      {due && (
+        <p className="flex items-center gap-1 text-xs font-medium text-amber-500">
+          <AlarmClock className="h-3 w-3" />
+          follow up {formatDistanceToNow(new Date(job.follow_up_at!), { addSuffix: true })}
+        </p>
+      )}
+
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
           {job.applied_at
@@ -178,6 +203,14 @@ function TrackerCard({
             : `score ${job.score}`}
         </span>
         <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={job.cover_letter ? 'Edit application' : 'Prepare application'}
+            onClick={() => onApply(job)}
+          >
+            <FileText />
+          </Button>
           {next && (
             <Button variant="ghost" size="icon-sm" title={`Move to ${next}`} onClick={() => onAdvance(job, next)}>
               <ArrowRight />

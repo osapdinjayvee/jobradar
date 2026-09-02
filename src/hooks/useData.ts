@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, FUNCTIONS_URL } from '@/lib/supabase'
-import type { ApplicationStatus, Company, FeedJob } from '@/lib/types'
+import type {
+  ApplicationPatch,
+  ApplicationStatus,
+  Company,
+  FeedJob,
+  Profile,
+} from '@/lib/types'
 
 const FEED_LIMIT = 600
 
@@ -51,33 +57,61 @@ export function useFeed() {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...changes } : j)))
   }, [])
 
-  const setStatus = useCallback(
-    async (job: FeedJob, status: ApplicationStatus) => {
+  /**
+   * Write any subset of the application record.
+   *
+   * Columns absent from the payload are left alone by the ON CONFLICT UPDATE,
+   * which is what lets the apply dialog save a cover letter without having to
+   * resend the status, notes and resume variant alongside it.
+   */
+  const saveApplication = useCallback(
+    async (job: FeedJob, changes: ApplicationPatch) => {
+      const status = changes.status ?? job.application_status ?? 'interested'
+
+      // Stamp applied_at the first time a job reaches `applied`, and never
+      // overwrite it afterwards — it is the clock the response rate runs on.
+      const appliedAt =
+        changes.applied_at !== undefined
+          ? changes.applied_at
+          : status === 'applied' && !job.applied_at
+            ? new Date().toISOString()
+            : job.applied_at
+
       patch(job.id, {
         application_status: status,
-        applied_at: status === 'applied' ? new Date().toISOString() : job.applied_at,
+        applied_at: appliedAt,
+        ...('notes' in changes ? { notes: changes.notes ?? null } : {}),
+        ...('resume_variant' in changes ? { resume_variant: changes.resume_variant ?? null } : {}),
+        ...('cover_letter' in changes ? { cover_letter: changes.cover_letter ?? null } : {}),
+        ...('follow_up_at' in changes ? { follow_up_at: changes.follow_up_at ?? null } : {}),
       })
-      const { error } = await supabase.from('applications').upsert(
-        {
-          job_id: job.id,
-          status,
-          applied_at: status === 'applied' ? (job.applied_at ?? new Date().toISOString()) : job.applied_at,
-        },
-        { onConflict: 'job_id' },
-      )
-      if (error) {
-        setError(error.message)
-        await refetch()
-      } else {
-        await refetch()
-      }
+
+      const { error } = await supabase
+        .from('applications')
+        .upsert({ ...changes, job_id: job.id, status, applied_at: appliedAt }, { onConflict: 'job_id' })
+
+      if (error) setError(error.message)
+      await refetch()
     },
     [patch, refetch],
   )
 
+  const setStatus = useCallback(
+    (job: FeedJob, status: ApplicationStatus) => saveApplication(job, { status }),
+    [saveApplication],
+  )
+
   const untrack = useCallback(
     async (job: FeedJob) => {
-      patch(job.id, { application_status: null, application_id: null, applied_at: null })
+      patch(job.id, {
+        application_status: null,
+        application_id: null,
+        applied_at: null,
+        notes: null,
+        resume_variant: null,
+        cover_letter: null,
+        follow_up_at: null,
+      })
       const { error } = await supabase.from('applications').delete().eq('job_id', job.id)
       if (error) setError(error.message)
       await refetch()
@@ -86,15 +120,8 @@ export function useFeed() {
   )
 
   const setNotes = useCallback(
-    async (job: FeedJob, notes: string) => {
-      const { error } = await supabase.from('applications').upsert(
-        { job_id: job.id, notes, status: job.application_status ?? 'interested' },
-        { onConflict: 'job_id' },
-      )
-      if (error) setError(error.message)
-      await refetch()
-    },
-    [refetch],
+    (job: FeedJob, notes: string) => saveApplication(job, { notes }),
+    [saveApplication],
   )
 
   const dismiss = useCallback(
@@ -109,7 +136,45 @@ export function useFeed() {
     [patch, refetch],
   )
 
-  return { jobs, loading, error, refetch, setStatus, untrack, setNotes, dismiss }
+  return { jobs, loading, error, refetch, setStatus, untrack, setNotes, dismiss, saveApplication }
+}
+
+/**
+ * The single profile row. `0004_application_flow.sql` seeds it, so a missing
+ * row means the migration has not been applied rather than a first-run state.
+ */
+export function useProfile() {
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const refetch = useCallback(async () => {
+    const { data, error } = await supabase.from('profile').select('*').eq('id', true).maybeSingle()
+    if (error) setError(error.message)
+    else setProfile((data ?? null) as Profile | null)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    void refetch()
+  }, [refetch])
+
+  const save = useCallback(
+    async (changes: Partial<Omit<Profile, 'id'>>) => {
+      setProfile((prev) => (prev ? { ...prev, ...changes } : prev))
+      const { error } = await supabase
+        .from('profile')
+        .upsert({ ...changes, id: true }, { onConflict: 'id' })
+      if (error) {
+        setError(error.message)
+        throw new Error(error.message)
+      }
+      await refetch()
+    },
+    [refetch],
+  )
+
+  return { profile, loading, error, refetch, save }
 }
 
 export function useCompanies() {
